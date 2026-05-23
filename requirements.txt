@@ -1,0 +1,4 @@
+# ARM64 Windows (Snapdragon X) 호환 확인된 버전
+faster-whisper>=1.1.0
+watchdog>=4.0.0
+ollama>=0.3.0
