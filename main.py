@@ -1,6 +1,7 @@
 import json
 import threading
 import time
+from datetime import datetime, time as dtime
 from pathlib import Path
 
 from faster_whisper import WhisperModel
@@ -24,6 +25,10 @@ FILE_STABILITY_INTERVAL = 2   # 초
 FILE_STABILITY_ROUNDS = 3     # 연속 확인 횟수
 FILE_STABILITY_MAX_WAIT = 120 # 최대 대기 시간 (초)
 
+WORK_START = dtime(9, 0)
+WORK_END = dtime(18, 0)
+WORK_DAYS = frozenset({0, 1, 2, 3, 4})  # 월~금
+
 SYSTEM_PROMPT = (
     "당신은 정신과 상담 내용을 요약하는 전문 보조 도구입니다. "
     "주어진 상담 대화 텍스트를 한국어로 요약해 주세요. "
@@ -31,6 +36,12 @@ SYSTEM_PROMPT = (
     "텍스트에 없는 내용은 절대 추가하거나 추론하지 마세요."
 )
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def is_work_hours() -> bool:
+    now = datetime.now()
+    return now.weekday() in WORK_DAYS and WORK_START <= now.time() < WORK_END
+
 
 _lock = threading.Lock()
 _model_lock = threading.Lock()
@@ -214,22 +225,35 @@ def main():
     processed = load_processed()
     print(f"처리 완료 기록: {len(processed)}개")
     print(f"감시 폴더: {RECORDINGS_DIR}")
+    print(f"업무 시간: 평일 {WORK_START.strftime('%H:%M')}~{WORK_END.strftime('%H:%M')} 자동 실행")
     print("종료하려면 Ctrl+C\n")
 
-    handler = RecordingHandler(processed)
-    observer = Observer()
-    observer.schedule(handler, str(RECORDINGS_DIR), recursive=False)
-    observer.start()
-
-    scan_existing(handler)
-
+    observer = None
+    handler = None
     try:
         while True:
-            time.sleep(1)
+            if is_work_hours():
+                if observer is None:
+                    print(f"[시작] {datetime.now().strftime('%m/%d %H:%M')} 업무 시간 — 감시 시작")
+                    handler = RecordingHandler(processed)
+                    observer = Observer()
+                    observer.schedule(handler, str(RECORDINGS_DIR), recursive=False)
+                    observer.start()
+                    scan_existing(handler)
+                time.sleep(30)
+            else:
+                if observer is not None:
+                    print(f"[대기] {datetime.now().strftime('%m/%d %H:%M')} 업무 시간 종료 — 내일 {WORK_START.strftime('%H:%M')}에 재시작")
+                    observer.stop()
+                    observer.join()
+                    observer = None
+                    handler = None
+                time.sleep(60)
     except KeyboardInterrupt:
         print("\n종료 중...")
-        observer.stop()
-    observer.join()
+        if observer is not None:
+            observer.stop()
+            observer.join()
     print("종료됨")
 
 
