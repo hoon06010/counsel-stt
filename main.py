@@ -1,4 +1,6 @@
 import json
+import queue
+import sys
 import threading
 import time
 from datetime import datetime, time as dtime
@@ -14,6 +16,8 @@ BASE_DIR = Path.home() / "상담"
 RECORDINGS_DIR = BASE_DIR / "recordings"
 RESULTS_DIR = BASE_DIR / "results"
 PROCESSED_FILE = BASE_DIR / "processed.json"
+LOG_FILE = BASE_DIR / "log.txt"
+LOG_MAX_BYTES = 5 * 1024 * 1024
 
 WHISPER_MODEL_SIZE = "large-v3"
 OLLAMA_MODEL = "exaone3.5:7.8b"
@@ -36,6 +40,50 @@ SYSTEM_PROMPT = (
     "텍스트에 없는 내용은 절대 추가하거나 추론하지 마세요."
 )
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+class _Tee:
+    """터미널과 로그 파일에 동시에 출력. pythonw 실행 시에도 로그가 남는다."""
+
+    def __init__(self, stream, log_handle):
+        self._stream = stream
+        self._log = log_handle
+        self._at_line_start = True
+
+    def write(self, data: str) -> int:
+        if self._stream is not None:
+            try:
+                self._stream.write(data)
+                self._stream.flush()
+            except Exception:
+                pass
+
+        for part in data.splitlines(keepends=True):
+            if self._at_line_start and part.strip():
+                self._log.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S "))
+            self._log.write(part)
+            self._at_line_start = part.endswith("\n")
+        self._log.flush()
+        return len(data)
+
+    def flush(self) -> None:
+        if self._stream is not None:
+            try:
+                self._stream.flush()
+            except Exception:
+                pass
+        self._log.flush()
+
+
+def setup_logging() -> None:
+    if LOG_FILE.exists() and LOG_FILE.stat().st_size > LOG_MAX_BYTES:
+        old = LOG_FILE.with_suffix(".old.txt")
+        old.unlink(missing_ok=True)
+        LOG_FILE.rename(old)
+
+    handle = open(LOG_FILE, "a", encoding="utf-8")
+    sys.stdout = _Tee(sys.stdout, handle)
+    sys.stderr = _Tee(sys.stderr, handle)
 
 
 def is_work_hours() -> bool:
@@ -118,7 +166,9 @@ def run_summary(text: str, filename: str) -> str:
             {"role": "user", "content": f"다음 상담 내용을 요약해 주세요:\n\n{text}"},
         ],
     )
-    summary = response.message.content
+    summary = (response.message.content or "").strip()
+    if not summary:
+        raise RuntimeError("요약 응답이 비어 있음")
     print(f"[요약] 완료 ({filename})")
     return summary
 
@@ -137,6 +187,13 @@ def process_file(audio_path: Path, processed: set[str]) -> None:
         transcript = run_stt(audio_path)
     except Exception as e:
         print(f"[오류] STT 실패 ({name}): {e}")
+        return
+
+    if not transcript.strip():
+        print(f"[건너뜀] {name} — STT 결과 없음 (무음/녹음 실패 추정)")
+        with _lock:
+            processed.add(name)
+            save_processed(processed)
         return
 
     try:
@@ -165,6 +222,26 @@ def process_file(audio_path: Path, processed: set[str]) -> None:
         print(f"[완료] {stem}.txt 저장됨 (요약 실패)")
 
 
+_work_queue: "queue.Queue[tuple[Path, RecordingHandler]]" = queue.Queue()
+
+
+def worker_loop() -> None:
+    """큐에 쌓인 녹음 파일을 한 번에 하나씩 처리.
+
+    Whisper large-v3는 CPU/메모리를 모두 점유하고 WhisperModel 인스턴스는
+    동시 transcribe 호출에 안전하지 않으므로 반드시 직렬로 처리한다.
+    """
+    while True:
+        audio_path, handler = _work_queue.get()
+        try:
+            process_file(audio_path, handler.processed)
+        except Exception as e:
+            print(f"[오류] 처리 중 예외 ({audio_path.name}): {e}")
+        finally:
+            handler._release(audio_path.name)
+            _work_queue.task_done()
+
+
 class RecordingHandler(FileSystemEventHandler):
     def __init__(self, processed: set[str]):
         self.processed = processed
@@ -188,12 +265,7 @@ class RecordingHandler(FileSystemEventHandler):
     def _dispatch(self, path: Path) -> None:
         if not self._try_queue(path):
             return
-        def run():
-            try:
-                process_file(path, self.processed)
-            finally:
-                self._release(path.name)
-        threading.Thread(target=run, daemon=True).start()
+        _work_queue.put((path, self))
 
     def on_created(self, event):
         if not event.is_directory:
@@ -207,10 +279,10 @@ class RecordingHandler(FileSystemEventHandler):
 
 def scan_existing(handler: RecordingHandler) -> None:
     """시작 시 미처리 파일을 백그라운드에서 처리."""
-    existing = [
-        f for f in RECORDINGS_DIR.glob("*.m4a")
-        if f.name not in handler.processed
-    ]
+    existing = sorted(
+        (f for f in RECORDINGS_DIR.glob("*.m4a") if f.name not in handler.processed),
+        key=lambda f: f.stat().st_mtime,
+    )
     if not existing:
         return
     print(f"[시작] 미처리 파일 {len(existing)}개 발견, 순차 처리합니다...")
@@ -221,10 +293,14 @@ def scan_existing(handler: RecordingHandler) -> None:
 def main():
     RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    setup_logging()
+
+    threading.Thread(target=worker_loop, daemon=True).start()
 
     processed = load_processed()
     print(f"처리 완료 기록: {len(processed)}개")
     print(f"감시 폴더: {RECORDINGS_DIR}")
+    print(f"로그 파일: {LOG_FILE}")
     print(f"업무 시간: 평일 {WORK_START.strftime('%H:%M')}~{WORK_END.strftime('%H:%M')} 자동 실행")
     print("종료하려면 Ctrl+C\n")
 
@@ -248,9 +324,13 @@ def main():
                     observer.join()
                     observer = None
                     handler = None
+                    if _work_queue.qsize():
+                        print(f"[대기] 남은 {_work_queue.qsize()}개는 계속 처리합니다")
                 time.sleep(60)
     except KeyboardInterrupt:
         print("\n종료 중...")
+        if _work_queue.qsize():
+            print(f"[주의] 미처리 {_work_queue.qsize()}개는 다음 실행 시 다시 처리됩니다")
         if observer is not None:
             observer.stop()
             observer.join()
