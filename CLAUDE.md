@@ -35,17 +35,20 @@ ARM64에서는 `pip install -r requirements.txt`를 바로 실행하면 `ctransl
 
 | 영역 | 줄 | 설명 |
 |---|---|---|
-| 설정 상수 | 14-41 | 경로, 모델명, 파일 안정화 파라미터, 업무시간, 시스템 프롬프트 |
-| `_Tee` / `setup_logging` | 45-86 | stdout/stderr를 터미널+로그파일로 이중 출력 |
-| `get_whisper_model` | 99-110 | Whisper 지연 로딩 (싱글턴) |
-| `load_processed` / `save_processed` | 113-122 | 처리 이력 JSON |
-| `wait_for_stable` | 125-148 | Syncthing 쓰기 완료 대기 (크기 3회 연속 동일) |
-| `run_stt` / `run_summary` | 151-173 | STT / 요약 |
-| `process_file` | 176-222 | 한 파일의 전체 처리 |
-| `worker_loop` | 228-242 | **직렬** 처리 워커 (단일 스레드) |
-| `RecordingHandler` | 245-277 | watchdog 이벤트 → 큐 투입, 중복 방지 |
-| `scan_existing` | 280-290 | 시작 시 미처리 파일 수집 |
-| `main` | 293-337 | 업무시간 루프, observer 생명주기 |
+| 설정 상수 | 15-46 | 경로, 모델명, 파일 안정화 파라미터, 업무시간, 재스캔 주기, 시스템 프롬프트 |
+| `_Tee` / `setup_logging` | 49-131 | stdout/stderr를 터미널+로그파일로 이중 출력, 파일 객체 인터페이스 포함 |
+| `ALWAYS_ON` / `is_work_hours` | 134-143 | 업무시간 판정 (`COUNSEL_STT_ALWAYS_ON=1`로 테스트 시 우회) |
+| `get_whisper_model` | 149-160 | Whisper 지연 로딩 (싱글턴) |
+| `load_processed` / `save_processed` | 163-203 | 처리 이력 JSON (손상 내성 읽기 + 원자적 쓰기) |
+| `wait_for_stable` | 206-229 | Syncthing 쓰기 완료 대기 (크기 3회 연속 동일) |
+| `run_stt` / `run_summary` | 232-254 | STT / 요약 |
+| `_record_failure` | 257-269 | 실패 횟수 기록, `MAX_RETRIES` 초과 시 재시도 중단 |
+| `process_file` | 272-321 | 한 파일의 전체 처리 |
+| `worker_loop` | 327-345 | **직렬** 처리 워커 (단일 스레드) |
+| `_in_progress` / `_failures` | 348-352 | 진행 중·실패 목록 (**전역** — handler 수명과 분리) |
+| `RecordingHandler` | 355-393 | watchdog 이벤트 → 큐 투입, 중복 방지 |
+| `scan_existing` | 396-426 | 미처리 파일 수집 (시작 시 + `RESCAN_INTERVAL` 주기) |
+| `main` | 429-473 | 업무시간 루프, observer 생명주기, 주기 재스캔 |
 
 ## 설계상 지켜야 할 것
 
@@ -60,19 +63,17 @@ ARM64에서는 `pip install -r requirements.txt`를 바로 실행하면 `ctransl
 
 ## 알려진 이슈
 
-윈도우 테스트 전 확인이 필요한 항목이 있습니다. 상세 분석·검증 절차·수정 우선순위는
-**`PLAN-windows-test.md`** 를 참고하세요.
+`PLAN-windows-test.md`의 A-1~A-6은 **2026-07-25 모두 수정 완료**했습니다.
+검증 결과와 남은 항목은 `PLAN-windows-test.md`를 참고하세요.
 
-우선순위 요약:
+남은 확인 항목:
 
-| 순위 | 이슈 | 위치 |
-|---|---|---|
-| 1 | `requirements.txt`의 `ollama>=0.3.0`과 `response.message` 접근 방식 불일치 → 요약 항상 실패 | `main.py:169` |
-| 2 | `processed.json` 손상 시 예외 처리 없이 시작 즉시 크래시 | `main.py:113-122`, `300` |
-| 3 | `_Tee`에 `isatty`/`encoding`/`fileno` 미구현 → tqdm 진행바 사용 시 AttributeError | `main.py:45-76` |
-| 4 | `scan_existing`의 `f.stat()` 예외가 프로세스를 종료시킴 | `main.py:284` |
-| 5 | 업무시간 경계에서 handler 재생성 → 큐 잔여 파일 중복 처리 가능 | `main.py:314` |
-| 6 | STT/저장 실패 파일이 재시작 전까지 재시도되지 않음 | `main.py:186-204` |
+| 이슈 | 내용 |
+|---|---|
+| 실행 환경 | ARM64 네이티브 Python으로는 `ctranslate2`/`av` 휠이 없어 **x64 Python venv(`.venv`)** 를 써야 합니다. 에뮬레이션이라 STT가 느립니다 |
+| 처리 속도 | `README.md`의 "30분 → 10~15분" 수치는 실측과 다를 수 있습니다 (아래 참고) |
+| 콘솔 인코딩 | 윈도우 기본 cp949 — 실행 시 `PYTHONUTF8=1` 권장. `log.txt`는 UTF-8로 정상 기록됨 |
+| 덮개 닫힘 동작 | Modern Standby 기기라 제어판에 `덮개를 닫을 때 설정`이 없습니다. `powercfg`로 설정(관리자 권한 불필요, `README.md` 3장). 2026-07-26 설정 적용 완료, **덮개 닫고 실제 처리되는지는 미검증** |
 
 ## 테스트
 

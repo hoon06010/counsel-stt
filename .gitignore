@@ -1,2 +1,11 @@
 __pycache__/
 *.pyc
+.venv/
+venv/
+*.tar.xz
+.claude/settings.local.json
+log.txt
+log.old.txt
+processed.json
+recordings/
+results/

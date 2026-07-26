@@ -41,9 +41,34 @@ Syncthing은 두 기기(Galaxy Tab, Galaxy Book4 Edge)에 각각 설치해야 �
 
 #### Galaxy Book4 Edge (Windows)
 
-1. [https://syncthing.net/downloads/](https://syncthing.net/downloads/) 에서 Windows ARM64용 설치 파일을 받아 실행합니다.
-2. 브라우저에서 `http://127.0.0.1:8384` 에 접속하면 Syncthing 관리 화면이 열립니다.
-3. 오른쪽 상단 **장치 ID**를 메모해 둡니다.
+관리자 권한이 없으므로 **무설치(portable) 방식**으로 사용자 폴더에 설치합니다.
+
+1. [Syncthing 릴리스](https://github.com/syncthing/syncthing/releases/latest)에서
+   `syncthing-windows-arm64-<버전>.zip` 을 받아 압축을 풀고,
+   내용을 `%LOCALAPPDATA%\Programs\Syncthing` 에 복사합니다. (ARM64 네이티브 빌드)
+2. 첫 실행 전에 설정과 장치 키를 만듭니다.
+   ```powershell
+   & "$env:LOCALAPPDATA\Programs\Syncthing\syncthing.exe" generate
+   ```
+3. `%LOCALAPPDATA%\Syncthing\config.xml` 에서 외부 통신을 끕니다 (상담 음성이 외부 서버를 경유하지 않도록).
+
+   | 항목 | 값 | 이유 |
+   |---|---|---|
+   | `globalAnnounceEnabled` | `false` | 외부 디스커버리 서버 미사용 |
+   | `relaysEnabled` | `false` | 외부 릴리스 경유 차단 |
+   | `natEnabled` | `false` | 공유기 포트 개방 안 함 |
+   | `crashReportingEnabled` | `false` | 크래시 리포트 전송 안 함 |
+   | `urAccepted` | `-1` | 사용 통계 전송 거부 |
+   | `startBrowser` | `false` | 자동 실행 시 브라우저 안 뜨게 |
+   | `localAnnounceEnabled` | `true` (유지) | 같은 WiFi에서 태블릿 탐색 |
+
+   이 설정에서는 **두 기기가 같은 WiFi에 있을 때만** 동기화됩니다.
+4. 로그인 시 자동 실행되도록 시작프로그램 폴더
+   (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`)에 바로가기를 만듭니다.
+   - 대상: `%LOCALAPPDATA%\Programs\Syncthing\syncthing.exe`
+   - 인수: `serve --no-console --no-browser --log-file="%LOCALAPPDATA%\Syncthing\syncthing.log"`
+5. 브라우저에서 `http://127.0.0.1:8384` 에 접속하면 Syncthing 관리 화면이 열립니다.
+6. 오른쪽 상단 **장치 ID**를 메모해 둡니다.
 
 #### Galaxy Tab (Android)
 
@@ -70,11 +95,46 @@ Syncthing은 두 기기(Galaxy Tab, Galaxy Book4 Edge)에 각각 설치해야 �
 
 노트북 덮개를 닫은 상태에서도 STT 처리가 계속 실행되도록 설정합니다.
 
-1. **시작 메뉴** → `전원 및 배터리 설정` 검색 후 열기
-2. 오른쪽 상단 **추가 전원 설정** 클릭
-3. 왼쪽 패널 **덮개를 닫을 때 설정** 클릭
-4. **덮개를 닫을 때** 항목을 **배터리 사용 시 / 전원 연결 시** 모두 **아무 것도 하지 않음**으로 변경
-5. **변경 내용 저장** 클릭
+> **Galaxy Book4 Edge는 제어판에 이 항목이 없습니다.**
+> 최신 대기 모드(Modern Standby) 기기라 `덮개를 닫을 때 설정` 페이지 자체가 숨겨져 있습니다
+> (레지스트리 `LIDACTION` 의 `Attributes=1`). 아래 명령으로 직접 설정합니다.
+> **관리자 권한은 필요 없습니다.**
+
+```powershell
+# 덮개를 닫을 때: 아무 것도 하지 않음 (전원 연결 시 / 배터리 사용 시 모두)
+powercfg /setacvalueindex SCHEME_CURRENT 4f971e89-eebd-4455-a8de-9e59040e7347 5ca83367-6e45-459f-a27b-476b1d01c936 0
+powercfg /setdcvalueindex SCHEME_CURRENT 4f971e89-eebd-4455-a8de-9e59040e7347 5ca83367-6e45-459f-a27b-476b1d01c936 0
+
+# 절전 모드로 전환: 안 함
+powercfg /change standby-timeout-ac 0
+powercfg /change standby-timeout-dc 0
+
+# 무인 절전 시간 제한: 안 함 (절전에서 깨어난 뒤 2분 만에 다시 자는 것 방지)
+powercfg /setacvalueindex SCHEME_CURRENT SUB_SLEEP 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 0
+powercfg /setdcvalueindex SCHEME_CURRENT SUB_SLEEP 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 0
+
+# 변경 사항 적용
+powercfg /setactive SCHEME_CURRENT
+```
+
+원래대로 되돌리려면 마지막 인자 `0`을 `1`(절전)로 바꿔 다시 실행합니다.
+
+확인:
+
+```powershell
+powercfg /q SCHEME_CURRENT SUB_SLEEP
+```
+
+`STANDBYIDLE`의 AC/DC 설정 색인이 모두 `0x00000000`이면 정상입니다.
+
+> **작업 스케줄러 작업도 함께 확인하세요.**
+> 작업 속성 → **조건** 탭에서 `컴퓨터의 AC 전원이 켜져 있는 경우에만 작업 시작`과
+> `컴퓨터가 배터리 전원으로 전환되면 중지`가 **모두 해제**되어 있어야
+> 배터리 상태에서 덮개를 닫아도 처리가 계속됩니다.
+
+> **덮개를 닫은 채로 돌릴 때는 전원 어댑터를 연결해 두세요.**
+> large-v3 STT는 CPU를 계속 100% 가까이 쓰기 때문에 배터리 소모가 매우 빠릅니다.
+> 또한 배터리 상태로 3일간 방치하면 최대 절전 모드로 들어갑니다(`HIBERNATEIDLE` 기본값).
 
 ---
 
@@ -143,30 +203,47 @@ python main.py
 
 ### 6. Windows 시작 시 자동 실행 등록
 
-노트북을 켤 때마다 `main.py`가 자동으로 실행되도록 작업 스케줄러에 등록합니다.
+로그인할 때마다 `main.py`가 자동으로 실행되도록 작업 스케줄러에 등록합니다.
+PowerShell 창을 열고 아래를 그대로 붙여넣습니다. **관리자 권한이 필요하지 않습니다.**
 
-1. **시작 메뉴** → `작업 스케줄러` 검색 후 실행
-2. 오른쪽 패널 **기본 작업 만들기** 클릭
-3. 이름: `상담 STT 자동 실행` → **다음**
-4. 트리거: **컴퓨터 시작 시** → **다음**
-5. 동작: **프로그램 시작** → **다음**
-6. 프로그램/스크립트 칸에 아래를 입력합니다.
-
-```
-pythonw
-```
-
-7. 인수 추가 칸에:
-
-```
-"C:\Users\{사용자명}\Downloads\counsel-stt\main.py"
+```powershell
+$action = New-ScheduledTaskAction -Execute "C:\counsel-stt-main\.venv\Scripts\pythonw.exe" `
+    -Argument "main.py" -WorkingDirectory "C:\counsel-stt-main"
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+$trigger.Delay = "PT1M"
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable `
+    -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 5)
+$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
+    -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskName "counsel-stt" -Action $action -Trigger $trigger `
+    -Settings $settings -Principal $principal -Description "Counsel STT watcher (pythonw, no console)" -Force
 ```
 
-8. **마침** 클릭
+각 설정의 이유입니다.
+
+| 설정 | 이유 |
+|---|---|
+| `.venv\Scripts\pythonw.exe` **전체 경로** | `pythonw`만 쓰면 PATH의 ARM64 파이썬이 잡혀 `ctranslate2` 임포트에서 죽습니다 |
+| 트리거 = **로그온 시** | "컴퓨터 시작 시"는 관리자 권한이 필요합니다 |
+| `Delay = PT1M` | Syncthing이 먼저 뜨도록 1분 늦춥니다 |
+| `MultipleInstances IgnoreNew` | 중복 실행을 막습니다 — STT 직렬 처리 원칙 |
+| `ExecutionTimeLimit 0` | 기본값(3일)에 걸려 종료되지 않게 합니다 |
+| `AllowStartIfOnBatteries` | 배터리 상태에서도 실행·유지합니다 |
+
+등록 확인과 즉시 실행:
+
+```powershell
+Get-ScheduledTask -TaskName "counsel-stt" | Select-Object TaskName, State
+Start-ScheduledTask -TaskName "counsel-stt"
+```
 
 > `pythonw`는 터미널 창 없이 백그라운드로 실행합니다.  
 > 터미널 창이 없어도 모든 로그는 `상담\log.txt`에 기록되므로, 문제가 생기면 이 파일을 확인하세요.  
-> 실행 화면을 직접 보고 싶을 때만 `pythonw` 대신 `python`을 사용하면 됩니다.
+> 실행 화면을 직접 보고 싶을 때만 `.venv\Scripts\python.exe main.py`로 실행하면 됩니다.
+
+> **업무 시간 밖에 실행하면 로그에 시작 배너만 찍히고 조용합니다.** 정상입니다.
+> 평일 09:00 전에는 감시를 시작하지 않으며(`main.py:495`), 이때는 `[대기]` 메시지도 남기지 않습니다.
 
 ---
 
@@ -215,6 +292,29 @@ Syncthing이 실행 중인지, 두 기기가 연결되어 있는지 확인합니
 ---
 
 ## 변경 내역
+
+### 2026-07-25 (2차 — 윈도우 테스트 반영)
+
+**처리 이력 파일이 손상돼도 시작되도록 수정**
+`processed.json`이 깨져 있으면 프로그램이 아무 메시지 없이 즉시 종료되던 문제를 수정했습니다.
+이제 경고를 남기고 빈 이력으로 시작합니다. 저장할 때도 임시 파일에 먼저 쓴 뒤 교체해,
+저장 도중 컴퓨터가 꺼져도 기존 이력이 남습니다.
+
+**모델 다운로드 중 종료되던 문제 수정**
+Whisper 모델을 처음 받을 때 진행률 표시 때문에 오류가 나거나 `log.txt`가 급격히 커지던 문제를 수정했습니다.
+
+**녹음 폴더 주기적 재확인**
+10분마다 폴더를 다시 확인해, 변환에 실패했거나 감지되지 않고 지나간 파일을 자동으로 재시도합니다.
+같은 파일이 3회 연속 실패하면 더 이상 시도하지 않고 로그에 남깁니다.
+
+**업무 시간 경계에서 같은 파일이 두 번 처리되던 문제 수정**
+18:00을 넘겨 처리가 이어질 때, 다음 날 같은 파일이 다시 변환될 수 있던 문제를 수정했습니다.
+
+**폴더 확인 중 파일이 사라져도 계속 실행**
+Syncthing이 동기화 중 파일을 옮기면 프로그램 전체가 종료되던 문제를 수정했습니다.
+
+**필요 패키지 버전 정정**
+`ollama` 최소 버전을 0.4.0으로 올렸습니다. 이보다 낮은 버전에서는 요약이 항상 실패합니다.
 
 ### 2026-07-25
 
